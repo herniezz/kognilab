@@ -1,0 +1,3 @@
+trial_num,condition,file,gender,age,education,music_edu,music_years,instrument,listening_freq,pleasant,arousal,emotions
+0,,,Kobieta,25,Wyższe (lic./inż.),Tak,n/a,n/a,Kilka razy w tygodniu,,,
+1,tonal,tonal\4T_30s.mp3,,,,,,,,7,7,nwm
