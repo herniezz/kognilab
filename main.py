@@ -4,46 +4,44 @@ import time
 import csv
 import pygame
 from pygame.locals import *
+import cv2
 
-# === Configuration ===
+# === konfiguracja ===
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 stim_dir = os.path.join(BASE_DIR, 'stimuli')
 data_dir = os.path.join(BASE_DIR, 'data')
 
-# Subdirectories for tonal and atonal files
+# subfoldery
 ton_dir = os.path.join(stim_dir, 'tonal')
 aton_dir = os.path.join(stim_dir, 'atonal')
 
-# Collect audio files
+# zbieranie plikow audio
 ton_files = [os.path.join('tonal', f) for f in os.listdir(ton_dir)
              if f.lower().endswith(('.wav', '.mp3', '.ogg'))]
 aton_files = [os.path.join('atonal', f) for f in os.listdir(aton_dir)
               if f.lower().endswith(('.wav', '.mp3', '.ogg'))]
 
-# Ensure exactly 5 of each condition
+# test, czy na pewno jest 5 plikow
 if len(ton_files) != 5 or len(aton_files) != 5:
     raise SystemExit(
         "Potrzebujesz dokładnie 5 plików tonalnych i 5 atonalnych w odpowiednich podfolderach.")
 
-# Build and shuffle stimulus list
+# losuj pliki
 stimuli = [(f, 'tonal') for f in ton_files] + [(f, 'atonal') for f in aton_files]
 random.shuffle(stimuli)
 
-# Participant ID and logging setup
-timestamp = int(time.time())
-participant_id = f'participant_{timestamp}'
-log_filename = os.path.join(data_dir, f"{participant_id}_data.csv")
+# przygotowanie logow - data, numer
+date_str = time.strftime("%Y-%m-%d")
+PARTICIPANT_NUMBER = 1
+log_filename = os.path.join(data_dir, f"badany_{PARTICIPANT_NUMBER}_{date_str}.csv")
 
-# Create data directory if missing
-os.makedirs(data_dir, exist_ok=True)
-
-# Write CSV header
+# napisz caly csv raz
 with open(log_filename, 'w', newline='', encoding='utf-8') as csvfile:
     fieldnames = ['trial_num', 'condition', 'file']
     writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
     writer.writeheader()
 
-# === Pygame Initialization ===
+# === init pygame ===
 pygame.init()
 pygame.mixer.init()
 screen = pygame.display.set_mode((0, 0), FULLSCREEN)
@@ -54,16 +52,25 @@ clock = pygame.time.Clock()
 BLACK = (0, 0, 0)
 WHITE = (255, 255, 255)
 
-# === Utility Functions ===
+# === utilsy ===
+def cleanup_and_exit():
+    """Zwalnia zasoby Pygame i zamyka aplikację."""
+    pygame.quit()
+    exit()
+
+
 def wait_for_input():
-    """Czeka na dowolny klawisz lub kliknięcie myszy."""
+    """Czeka na dowolny klawisz lub kliknięcie myszy. Esc zamyka aplikację."""
     while True:
         for event in pygame.event.get():
-            if event.type in (KEYDOWN, MOUSEBUTTONDOWN):
-                return
             if event.type == QUIT:
-                pygame.quit()
-                exit()
+                cleanup_and_exit()
+            if event.type == KEYDOWN:
+                if event.key == K_ESCAPE:
+                    cleanup_and_exit()
+                return
+            if event.type == MOUSEBUTTONDOWN:
+                return
         clock.tick(30)
 
 
@@ -84,25 +91,53 @@ def show_message(text):
 
 
 def play_fragment(path, idx, max_duration=None):
-    """Odtwarza fragment audio z opcjonalnym limitem czasu w sekundach."""
+    """Odtwarza fragment audio i nagrywa wideo z kamery, nakładając numer próby."""
+    # inicjalizacja kamery
+    cap = cv2.VideoCapture(0, cv2.CAP_AVFOUNDATION)
+    if not cap.isOpened():
+        print("Nie można otworzyć kamery")
+        return
+    # parametry nagrywania
+    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    video_filename = os.path.join(data_dir, f"badany_{PARTICIPANT_NUMBER}_{date_str}_trial{idx}.mp4")
+    out = cv2.VideoWriter(video_filename, fourcc, 20.0, (frame_width, frame_height))
+
+    # start audio
     pygame.mixer.music.load(path)
     pygame.mixer.music.play()
     start_time = time.time()
 
     while pygame.mixer.music.get_busy():
         elapsed = time.time() - start_time
+        # ograniczenie długości dla atonalnych
         if max_duration and elapsed >= max_duration:
             pygame.mixer.music.stop()
             break
 
+        # capture frame
+        ret, frame = cap.read()
+        if not ret:
+            break
+        # nakładanie tekstu (numer próby)
+        cv2.putText(frame, f"Fragment {idx}/{len(stimuli)}", (50, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        out.write(frame)
+
+        # wyświetlanie statusu w Pygame
         for event in pygame.event.get():
             if event.type == QUIT:
-                pygame.quit()
-                exit()
+                cap.release()
+                out.release()
+                cleanup_and_exit()
+            if event.type == KEYDOWN and event.key == K_ESCAPE:
+                cap.release()
+                out.release()
+                cleanup_and_exit()
 
-        # Render playback screen\
         screen.fill(BLACK)
-        msg = f"Odtwarzanie fragmentu {idx}"
+        msg = f"Odtwarzanie {idx}/{len(stimuli)}"
         msg_surf = font.render(msg, True, WHITE)
         msg_rect = msg_surf.get_rect(
             center=(screen.get_width() // 2, screen.get_height() // 2)
@@ -119,67 +154,49 @@ def play_fragment(path, idx, max_duration=None):
         pygame.display.flip()
         clock.tick(30)
 
-# === Main Experiment Flow ===
+    # zwolnienie zasobów
+    cap.release()
+    out.release()
+
+# === cały flow eksperymentu ===
 def main():
-    # Powitanie
     show_message(
         "Witaj w badaniu reakcji emocjonalnych na muzykę!\n\n"
         "Będziesz słuchał/a 10 fragmentów muzycznych.\n\n"
-        "Załóż Apple Watch i przygotuj się do rejestracji ECG.\n\n"
-        "Naciśnij dowolny klawisz, aby rozpocząć."
+        "Naciśnij dowolny klawisz, aby zakończyć."
     )
 
-    # Instrukcja przed rozpoczęciem rejestracji ECG
-    show_message(
-        "Proszę uruchomić rejestrację ECG na Apple Watch.\n\n"
-        "Upewnij się, że urządzenie jest prawidłowo założone.\n\n"
-        "Naciśnij dowolny klawisz, aby kontynuować."
-    )
-
-    # Pętle prób
     total_trials = len(stimuli)
     for idx, (rel_path, cond) in enumerate(stimuli, start=1):
-        # Przed odtwarzaniem
         show_message(
             f"Fragment {idx} z {total_trials}\n\n"
             "Naciśnij dowolny klawisz, aby rozpocząć odtwarzanie."
         )
         full_path = os.path.join(stim_dir, rel_path)
-
-        # Ustal limit czasu dla atonalnych
         limit = 30 if cond == 'atonal' else None
         play_fragment(full_path, idx, max_duration=limit)
 
-        # Po odtwarzaniu: ankieta
         show_message(
             f"Fragment {idx} z {total_trials}\n\n"
             "Uzupełnij kwestionariusz na papierze.\n\n"
-            "Po zakończeniu naciśnij dowolny klawisz."
+            "Po zakończeniu naciśnij dowolny klawisz, aby kontynuować."
         )
 
-        # Zapis w CSV (z zachowaniem relatywnej ścieżki)
         with open(log_filename, 'a', newline='', encoding='utf-8') as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=['trial_num', 'condition', 'file'])
-            writer.writerow({
-                'trial_num': idx,
-                'condition': cond,
-                'file': rel_path
-            })
+            writer.writerow({'trial_num': idx, 'condition': cond, 'file': rel_path})
 
-        # Przygotowanie do następnej próby
         if idx < total_trials:
             show_message(
                 f"Przygotowanie do fragmentu {idx+1} z {total_trials}\n\n"
-                "Uruchom rejestrację ECG na Apple Watch.\n\n"
                 "Naciśnij dowolny klawisz, aby kontynuować."
             )
 
-    # Ekran końcowy
     show_message(
         "Dziękujemy za udział w badaniu!\n\n"
         "Naciśnij dowolny klawisz, aby zakończyć."
     )
-    pygame.quit()
+    cleanup_and_exit()
 
 if __name__ == '__main__':
     main()
